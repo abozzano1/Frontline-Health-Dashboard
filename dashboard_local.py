@@ -1352,11 +1352,11 @@ def main():
     snapshot_date = st.sidebar.date_input("Snapshot Date", value=yesterday)
     target_date_str = snapshot_date.strftime("%Y-%m-%d")
 
-    # Previous day for delta comparison
-    prev_date = snapshot_date - timedelta(days=1)
+    # Previous week (same day last week) for delta comparison
+    prev_date = snapshot_date - timedelta(days=7)
     prev_date_str = prev_date.strftime("%Y-%m-%d")
 
-    # Load current day first, then previous day
+    # Load current day first, then previous week
     with st.spinner("Loading snapshot data from Snowflake..."):
         df = load_snapshot(target_date_str)
 
@@ -1364,8 +1364,8 @@ def main():
         st.warning("No data returned for the selected date. Try a different date.")
         return
 
-    # Load previous day (cached after first run) - skip on cold load for speed
-    show_deltas = st.sidebar.checkbox("Show vs Prior Day deltas", value=True)
+    # Load previous week (cached after first run) - skip on cold load for speed
+    show_deltas = st.sidebar.checkbox(f"Show vs Prior Week deltas ({prev_date.strftime('%m/%d')})", value=True)
     if show_deltas:
         df_prev = load_snapshot(prev_date_str)
     else:
