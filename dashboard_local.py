@@ -2859,7 +2859,7 @@ def main():
     )
 
     store_summary["pct_lot_repair"] = pd.to_numeric(
-        (store_summary["lotrepair"] - store_summary["prefrontlineprocessstock"].fillna(0)) / (store_summary["frontline"] + store_summary["lotrepair"]).replace(0, pd.NA) * 100,
+        store_summary["lotrepair"] / (store_summary["frontline"] + store_summary["lotrepair"]).replace(0, pd.NA) * 100,
         errors="coerce"
     )
 
@@ -3119,27 +3119,39 @@ def main():
         # Company aggregate
         co_lr = ranking_df["lotrepair"].sum()
         co_pfp = ranking_df["prefrontlineprocessstock"].fillna(0).sum()
+        co_pfp_extra = ranking_df["prefrontlineprocessextrarepair"].fillna(0).sum()
+        co_reup = ranking_df["emissionsreup"].fillna(0).sum()
+        co_vr = co_lr - co_pfp - co_pfp_extra - co_reup
         co_fl = ranking_df["frontline"].sum()
-        co_lr_adj = co_lr - co_pfp
-        co_pct_lr = (co_lr_adj / (co_fl + co_lr) * 100) if (co_fl + co_lr) > 0 else 0
+        co_pct_lr = (co_lr / (co_fl + co_lr) * 100) if (co_fl + co_lr) > 0 else 0
         company_row = pd.DataFrame([{
-            "Store": "COMPANY TOTAL", "Region": "", "PFP": "",
-            "Lot Repair Units": int(co_lr_adj), "Emissions Stock": int(co_pfp),
+            "Store": "COMPANY TOTAL", "Region": "",
+            "Lot Repair": int(co_lr), "PFP Stock": int(co_pfp),
+            "PFP Extra Repair": int(co_pfp_extra), "Emissions ReUp": int(co_reup),
+            "VehicleRepair": int(co_vr),
             "Frontline": int(co_fl), "% in Lot Repair": f"{co_pct_lr:.1f}%"
         }])
         st.dataframe(company_row, use_container_width=True, hide_index=True)
         # Region aggregates
         region_lr = ranking_df.groupby("sourcingregion").agg(
-            lotrepair=("lotrepair", "sum"), prefrontlineprocessstock=("prefrontlineprocessstock", "sum"),
+            lotrepair=("lotrepair", "sum"),
+            prefrontlineprocessstock=("prefrontlineprocessstock", "sum"),
+            prefrontlineprocessextrarepair=("prefrontlineprocessextrarepair", "sum"),
+            emissionsreup=("emissionsreup", "sum"),
             frontline=("frontline", "sum")
         ).reset_index()
         region_lr["prefrontlineprocessstock"] = region_lr["prefrontlineprocessstock"].fillna(0)
-        region_lr["lr_adj"] = region_lr["lotrepair"] - region_lr["prefrontlineprocessstock"]
-        region_lr["pct"] = (region_lr["lr_adj"] / (region_lr["frontline"] + region_lr["lotrepair"]).replace(0, pd.NA) * 100).fillna(0)
+        region_lr["prefrontlineprocessextrarepair"] = region_lr["prefrontlineprocessextrarepair"].fillna(0)
+        region_lr["emissionsreup"] = region_lr["emissionsreup"].fillna(0)
+        region_lr["vehiclerepair"] = region_lr["lotrepair"] - region_lr["prefrontlineprocessstock"] - region_lr["prefrontlineprocessextrarepair"] - region_lr["emissionsreup"]
+        region_lr["pct"] = (region_lr["lotrepair"] / (region_lr["frontline"] + region_lr["lotrepair"]).replace(0, pd.NA) * 100).fillna(0)
         region_display = pd.DataFrame({
             "Region": region_lr["sourcingregion"],
-            "Lot Repair Units": region_lr["lr_adj"].astype(int),
-            "Emissions Stock": region_lr["prefrontlineprocessstock"].astype(int),
+            "Lot Repair": region_lr["lotrepair"].astype(int),
+            "PFP Stock": region_lr["prefrontlineprocessstock"].astype(int),
+            "PFP Extra Repair": region_lr["prefrontlineprocessextrarepair"].astype(int),
+            "Emissions ReUp": region_lr["emissionsreup"].astype(int),
+            "VehicleRepair": region_lr["vehiclerepair"].astype(int),
             "Frontline": region_lr["frontline"].astype(int),
             "% in Lot Repair": region_lr["pct"].round(1)
         })
