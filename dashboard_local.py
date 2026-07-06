@@ -773,7 +773,9 @@ select distinct ch.stock_number,parentcostcenterdesc,ch.created_date
 
 ,case when ts.stock_number is not null then 1 else 0 end as EmissionsExtraRepair
 
-,case when minr.stock_number is not null then 1 else 0 end as PreFrontlineProcessCar
+,case when minr.stock_number is not null and dr.storecostcenter_id is not null and ts.stock_number is null then 1 else 0 end as PreFrontlineProcessCar
+
+,case when minr.stock_number is not null and dr.storecostcenter_id is null and ts.stock_number is null then 1 else 0 end as EmissionsReUp 
 
 FROM 
 
@@ -817,7 +819,9 @@ FROM
 
     AND CH.CLAIM_NUMBER=MINR.CLAIM_NUMBER
 
-    
+    left join INVENTORY_SANDBOX.SUPPLYCHAIN.TBLDISTROREQUIREMENTS dr
+
+        on ccd.childcostcenterid=dr.storecostcenter_id
 
 where ch.repair_facility_name not ilike '%Unwinds%'
 
@@ -835,7 +839,7 @@ select asofdate,tf.stocknumber,tf.childcostcenterdesc,lr.parentcostcenterdesc,tf
 
 ,coalesce(mm.commonmodel,mm2.commonmodel,CONCAT('OTHER_',case when a.sizegroup ilike 'SPORTS-SPECIALTY' then 'SPECIALTY' ELSE a.SIZEGROUP END)) as commonmodel
 
-,EmissionsExtraRepair,PreFrontlineProcessCar,nextdate
+,EmissionsExtraRepair,PreFrontlineProcessCar,EmissionsReUp,nextdate
 
 ,tf.classmake
 
@@ -1533,6 +1537,10 @@ d.calendardate as datekey
 
 ,count(distinct case when src.PreFrontlineProcessCar>=1 and  EmissionsExtraRepair=0 then src.stocknumber end) as PreFrontlineProcessStock
 
+,count(distinct case when EmissionsExtraRepair=1 then src.stocknumber end) as PreFrontlineProcessExtraRepair
+
+,count(distinct case when src.emissionsreup=1 then src.stocknumber end) as EmissionsReUp
+
 ,count(distinct case when src.in_process_desc ilike 'Layaway' then src.stocknumber end) as  Layaway
 
 ,null AS today
@@ -1597,7 +1605,7 @@ left join
 
 (
 
-    SELECT stocknumber, distrogroups, parentcostcenterdesc,classmake,commonmodel, asofdate AS datekey,in_process_desc,sourcingregion,activedealerdays,frontline,websiteunit,null as EmissionsExtraRepair,null as PreFrontlineProcessCar FROM trendedfrontlines
+    SELECT stocknumber, distrogroups, parentcostcenterdesc,classmake,commonmodel, asofdate AS datekey,in_process_desc,sourcingregion,activedealerdays,frontline,websiteunit,null as EmissionsExtraRepair,null as PreFrontlineProcessCar,null as emissionsreup FROM trendedfrontlines
 
     where in_process_desc in ('Dealer','Holding Lot')
 
@@ -1605,13 +1613,13 @@ left join
 
     
 
-    SELECT stocknumber, distrogroups, parentcostcenterdesc,classmake,commonmodel, calendardate as datekey,'Allocation' as in_process_desc,sourcingregion,null as activedealerdays,null as frontline,null as websiteunit,null as EmissionsExtraRepair,null as PreFrontlineProcessCar FROM finalallocations
+    SELECT stocknumber, distrogroups, parentcostcenterdesc,classmake,commonmodel, calendardate as datekey,'Allocation' as in_process_desc,sourcingregion,null as activedealerdays,null as frontline,null as websiteunit,null as EmissionsExtraRepair,null as PreFrontlineProcessCar,null as emissionsreup FROM finalallocations
 
     UNION all
 
     
 
-    SELECT stocknumber, distrogroups, parentcostcenterdesc,classmake,commonmodel, asofdate as datekey, in_process_desc,sourcingregion,null as activedealerdays,null as frontline,null as websiteunit,EmissionsExtraRepair,PreFrontlineProcessCar FROM lotrepair
+    SELECT stocknumber, distrogroups, parentcostcenterdesc,classmake,commonmodel, asofdate as datekey, in_process_desc,sourcingregion,null as activedealerdays,null as frontline,null as websiteunit,EmissionsExtraRepair,PreFrontlineProcessCar,EmissionsReUp FROM lotrepair
 
 
 
@@ -1619,7 +1627,7 @@ left join
 
     
 
-    SELECT stocknumber, distrogroups, parentcostcenterdesc,classmake,commonmodel, asofdate as datekey,'Layaway' as in_process_desc,sourcingregion,null as activedealerdays,null as frontline,null as websiteunit,null as EmissionsExtraRepair,null as PreFrontlineProcessCar FROM layaways
+    SELECT stocknumber, distrogroups, parentcostcenterdesc,classmake,commonmodel, asofdate as datekey,'Layaway' as in_process_desc,sourcingregion,null as activedealerdays,null as frontline,null as websiteunit,null as EmissionsExtraRepair,null as PreFrontlineProcessCar,null as emissionsreup FROM layaways
 
 ) src
 
@@ -1793,6 +1801,10 @@ d.calendardate as datekey
 
 ,null as PreFrontlineProcessStock
 
+,null as PreFrontlineProcessExtraRepair
+
+,null as EmissionsReUp
+
 --,IFNULL(TitlesInProcess,0) AS TITLESINPROCESS
 
 ,null AS LAYAWAY
@@ -1894,6 +1906,10 @@ union all
 ,null AS LOTREPAIR
 
 ,null as PreFrontlineProcessStock
+
+,null as PreFrontlineProcessExtraRepair
+
+,null as EmissionsReUp
 
 --,IFNULL(TitlesInProcess,0) AS TITLESINPROCESS
 
@@ -2678,6 +2694,9 @@ def main():
             trend_df.to_parquet(os.path.join(out_dir, "trends.parquet"), index=False)
             dupes_df = load_dupes(target_date_str)
             dupes_df.to_parquet(os.path.join(out_dir, "dupes.parquet"), index=False)
+            # Save dupes trend for specific combination
+            dupes_trend_df = load_dupes_trend(trend_start, target_date_str, "NORTH COUNTY ST LOUIS", "BLAZER", "0-40000", "SUV-MediumSUVSize-22K-99K KBB")
+            dupes_trend_df.to_parquet(os.path.join(out_dir, "dupes_trend.parquet"), index=False)
             meta = pd.DataFrame({
                 "key": ["snapshot_date", "prev_date", "trend_start", "trend_end"],
                 "value": [target_date_str, prev_date_str, trend_start, target_date_str],
@@ -2792,6 +2811,8 @@ def main():
             avgdealerdays=("avgdealerdays", "mean"),
             prefrontlineprocess=("prefrontlineprocess", "max"),
             prefrontlineprocessstock=("prefrontlineprocessstock", "sum"),
+            prefrontlineprocessextrarepair=("prefrontlineprocessextrarepair", "sum"),
+            emissionsreup=("emissionsreup", "sum"),
             storetotalfrontlineinventory=("storetotalfrontlineinventory", "max"),
             today=("today", "sum"),
             day1=("day1", "sum"),
@@ -3081,16 +3102,19 @@ def main():
         worst_repair = (
             ranking_df[ranking_df["pct_lot_repair"].notna()]
             .nlargest(10, "pct_lot_repair")[
-                ["parentcostcenterdesc", "sourcingregion", "prefrontlineprocess", "lotrepair", "prefrontlineprocessstock", "frontline", "pct_lot_repair"]
+                ["parentcostcenterdesc", "sourcingregion", "lotrepair", "prefrontlineprocessstock", "prefrontlineprocessextrarepair", "emissionsreup", "frontline", "pct_lot_repair"]
             ]
             .reset_index(drop=True)
         )
         worst_repair.index += 1
-        worst_repair.columns = ["Store", "Region", "PFP", "Lot Repair Units", "Emissions Stock", "Frontline", "% in Lot Repair"]
-        worst_repair["PFP"] = worst_repair["PFP"].fillna(0).astype(int)
-        worst_repair["Emissions Stock"] = worst_repair["Emissions Stock"].fillna(0).astype(int)
-        worst_repair["Lot Repair Units"] = worst_repair["Lot Repair Units"] - worst_repair["Emissions Stock"]
+        worst_repair.columns = ["Store", "Region", "Lot Repair", "PFP Stock", "PFP Extra Repair", "Emissions ReUp", "Frontline", "% in Lot Repair"]
+        worst_repair["PFP Stock"] = worst_repair["PFP Stock"].fillna(0).astype(int)
+        worst_repair["PFP Extra Repair"] = worst_repair["PFP Extra Repair"].fillna(0).astype(int)
+        worst_repair["Emissions ReUp"] = worst_repair["Emissions ReUp"].fillna(0).astype(int)
+        worst_repair["Lot Repair"] = worst_repair["Lot Repair"].fillna(0).astype(int)
+        worst_repair["VehicleRepair"] = worst_repair["Lot Repair"] - worst_repair["PFP Stock"] - worst_repair["PFP Extra Repair"] - worst_repair["Emissions ReUp"]
         worst_repair["% in Lot Repair"] = worst_repair["% in Lot Repair"].round(1)
+        worst_repair = worst_repair[["Store", "Region", "Lot Repair", "PFP Stock", "PFP Extra Repair", "Emissions ReUp", "VehicleRepair", "Frontline", "% in Lot Repair"]]
         st.dataframe(worst_repair, use_container_width=True, column_config={"% in Lot Repair": st.column_config.NumberColumn(format="%.1f%%")})
         # Company aggregate
         co_lr = ranking_df["lotrepair"].sum()
