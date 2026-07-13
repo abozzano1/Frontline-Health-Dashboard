@@ -748,8 +748,13 @@ def main():
     c4.metric("% to Optimum", f"{pct_website_optimum:.1f}%")
 
     # Row 3: Lot Repair / Delta / LR Optimum / % to Optimum
+    lr_pfp = int(store_summary["prefrontlineprocessstock"].fillna(0).sum()) if "prefrontlineprocessstock" in store_summary.columns else 0
+    lr_pfp_extra = int(store_summary["prefrontlineprocessextrarepair"].fillna(0).sum()) if "prefrontlineprocessextrarepair" in store_summary.columns else 0
+    lr_reup = int(store_summary["emissionsreup"].fillna(0).sum()) if "emissionsreup" in store_summary.columns else 0
+    lr_vr = int(total_lotrepair) - lr_pfp - lr_pfp_extra - lr_reup
+    lr_tooltip = f"PFP Stock: {lr_pfp:,}  \nPFP Extra Repair: {lr_pfp_extra:,}  \nEmissions ReUp: {lr_reup:,}  \nVehicle Repair: {lr_vr:,}"
     c1, c2, c3, c4 = st.columns([3, 2, 3, 3])
-    c1.metric("Lot Repair Units", f"{int(total_lotrepair):,}")
+    c1.metric("Lot Repair Units", f"{int(total_lotrepair):,}", help=lr_tooltip)
     c2.metric("vs Prior Week", f"{delta_lotrepair:+,}" if delta_lotrepair is not None else "N/A", delta=f"{delta_lotrepair:+,}" if delta_lotrepair is not None else None, delta_color="inverse")
     c3.metric("Lot Repair Optimum", f"{int(lotrepair_optimum):,}")
     c4.metric("% to Optimum", f"{pct_lotrepair_optimum:.1f}%")
@@ -1322,9 +1327,13 @@ def main():
 
             # Pre-built table is per store/model/date - aggregate to store/date level
             # (matching what the original TRENDS_SQL returned)
-            for c in ["frontline", "websiteunit", "lotrepair", "sales", "dealeroptimum"]:
+            for c in ["frontline", "websiteunit", "lotrepair", "sales", "dealeroptimum", "layaway",
+                       "prefrontlineprocessstock", "prefrontlineprocessextrarepair", "emissionsreup"]:
                 if c in df_trend.columns:
                     df_trend[c] = pd.to_numeric(df_trend[c], errors="coerce").fillna(0)
+
+            # Frontline for trends = website + lot repair + layaway
+            df_trend["frontline"] = df_trend["websiteunit"] + df_trend["lotrepair"] + df_trend["layaway"]
 
             # Compute derived columns at row (model) level
             if "websiteunit" in df_trend.columns:
@@ -1344,18 +1353,24 @@ def main():
                 merch_dev["merch_deviation"] = merch_dev["_merch_abs_dev"] / 2
                 merch_dev = merch_dev.drop(columns=["_merch_abs_dev"])
 
+            # Extract dealeroptimum at store-day level (its row has NULL sourcingregion, would be dropped by groupby)
+            optimum_df = df_trend.groupby(["calendardate", "parentcostcenterdesc"])["dealeroptimum"].max().reset_index()
+
             # Aggregate to store-day level
             store_day_agg = {
                 "frontline": ("frontline", "sum"),
-                "dealeroptimum": ("dealeroptimum", "max"),
                 "lotrepair": ("lotrepair", "sum"),
                 "sales": ("sales", "sum"),
+                "prefrontlineprocessstock": ("prefrontlineprocessstock", "sum"),
+                "prefrontlineprocessextrarepair": ("prefrontlineprocessextrarepair", "sum"),
+                "emissionsreup": ("emissionsreup", "sum"),
             }
             if "_website_flag" in df_trend.columns:
                 store_day_agg["website_units"] = ("_website_flag", "sum")
             if "_dup_excess" in df_trend.columns:
                 store_day_agg["duplicate_units"] = ("_dup_excess", "sum")
 
+            df_trend = df_trend.dropna(subset=["sourcingregion"])
             df_trend = df_trend.groupby(["calendardate", "parentcostcenterdesc", "sourcingregion"]).agg(**store_day_agg).reset_index()
 
             # Merge merch_deviation back
@@ -1372,18 +1387,25 @@ def main():
             if trend_stores:
                 df_trend = df_trend[df_trend["parentcostcenterdesc"].isin(trend_stores)]
 
-            for c in ["frontline", "dealeroptimum", "lotrepair", "sales", "website_units", "duplicate_units"]:
+            for c in ["frontline", "lotrepair", "sales", "website_units", "duplicate_units",
+                       "prefrontlineprocessstock", "prefrontlineprocessextrarepair", "emissionsreup"]:
                 if c in df_trend.columns:
                     df_trend[c] = pd.to_numeric(df_trend[c], errors="coerce").fillna(0)
             if "merch_deviation" in df_trend.columns:
                 df_trend["merch_deviation"] = pd.to_numeric(df_trend["merch_deviation"], errors="coerce")
 
+            # Filter optimum_df to match the same stores remaining after region/store filters
+            filtered_stores = df_trend["parentcostcenterdesc"].unique()
+            optimum_df = optimum_df[optimum_df["parentcostcenterdesc"].isin(filtered_stores)]
+
             # Aggregate to daily totals (company or filtered)
             agg_dict = {
                 "frontline": ("frontline", "sum"),
-                "dealeroptimum": ("dealeroptimum", "sum"),
                 "lotrepair": ("lotrepair", "sum"),
                 "sales": ("sales", "sum"),
+                "prefrontlineprocessstock": ("prefrontlineprocessstock", "sum"),
+                "prefrontlineprocessextrarepair": ("prefrontlineprocessextrarepair", "sum"),
+                "emissionsreup": ("emissionsreup", "sum"),
             }
             if "website_units" in df_trend.columns:
                 agg_dict["website_units"] = ("website_units", "sum")
@@ -1393,9 +1415,18 @@ def main():
                 agg_dict["merch_deviation"] = ("merch_deviation", "mean")
             daily = df_trend.groupby("calendardate").agg(**agg_dict).reset_index()
 
+            # Aggregate dealeroptimum separately (one value per store, not per sourcingregion)
+            daily_optimum = optimum_df.groupby("calendardate")["dealeroptimum"].sum().reset_index()
+            daily = daily.merge(daily_optimum, on="calendardate", how="left")
+            daily["dealeroptimum"] = daily["dealeroptimum"].fillna(0)
+
             daily["pct_to_optimum"] = (daily["frontline"] / daily["dealeroptimum"].replace(0, pd.NA) * 100).fillna(0).round(1)
             daily["pct_lot_repair"] = (daily["lotrepair"] / (daily["lotrepair"] + daily["frontline"]).replace(0, pd.NA) * 100).fillna(0).round(1)
             daily["pct_frontline_sold"] = (daily["sales"] / daily["frontline"].replace(0, pd.NA) * 100).fillna(0).round(2)
+
+            # Lot repair breakdown: vehicle repair = total - other 3
+            daily["vehiclerepair"] = (daily["lotrepair"] - daily["prefrontlineprocessstock"]
+                                      - daily["prefrontlineprocessextrarepair"] - daily["emissionsreup"]).clip(lower=0)
 
             # Ensure calendardate is proper date for chart x-axis
             daily["calendardate"] = pd.to_datetime(daily["calendardate"])
@@ -1433,6 +1464,31 @@ def main():
                 chart4 = daily[["calendardate", "pct_lot_repair"]].set_index("calendardate")
                 chart4.columns = ["% Lot Repair"]
                 st.line_chart(chart4, y_label="%")
+
+            # Lot Repair Breakdown charts (2x2)
+            col_lr1, col_lr2 = st.columns(2)
+            with col_lr1:
+                st.subheader("PFP Stock")
+                chart_pfp = daily[["calendardate", "prefrontlineprocessstock"]].set_index("calendardate")
+                chart_pfp.columns = ["PFP Stock"]
+                st.line_chart(chart_pfp)
+            with col_lr2:
+                st.subheader("PFP Extra Repair")
+                chart_pfpe = daily[["calendardate", "prefrontlineprocessextrarepair"]].set_index("calendardate")
+                chart_pfpe.columns = ["PFP Extra Repair"]
+                st.line_chart(chart_pfpe)
+
+            col_lr3, col_lr4 = st.columns(2)
+            with col_lr3:
+                st.subheader("Emissions ReUp")
+                chart_reup = daily[["calendardate", "emissionsreup"]].set_index("calendardate")
+                chart_reup.columns = ["Emissions ReUp"]
+                st.line_chart(chart_reup)
+            with col_lr4:
+                st.subheader("Vehicle Repair")
+                chart_vr = daily[["calendardate", "vehiclerepair"]].set_index("calendardate")
+                chart_vr.columns = ["Vehicle Repair"]
+                st.line_chart(chart_vr)
 
             col_left3, col_right3 = st.columns(2)
 
